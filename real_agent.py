@@ -7,6 +7,8 @@ from pprint import pprint
 
 from anthropic.types import MessageParam, ToolParam, ToolResultBlockParam
 
+#todo:目前已有的优化计划：1.报错返回统一放主循环
+
 
 def calculator(expression: str) -> int | float:
     """计算简单的数学表达式。仅用于本教程的固定示例。"""
@@ -33,21 +35,6 @@ TOOL_FUNCTIONS = {
     "get_current_time": get_current_time,
     "read_file": read_file,
 }
-
-
-# def run_tool(name: str, tool_input: dict[str, object]) -> int | float | str:
-#     """根据模型给出的工具名，把参数交给对应的 Python 函数。"""
-#     if name == "calculator":
-#         expression = tool_input.get("expression")
-#         if not isinstance(expression, str):
-#             raise ValueError("calculator 缺少字符串参数 expression")
-#         return calculator(expression)
-
-#     if name == "get_current_time":
-#         return get_current_time()
-
-#     raise RuntimeError(f"未知工具：{name}")
-
 
 def print_messages(label: str, history: list[MessageParam]) -> None:
     """用容易阅读的格式完整打印当前对话历史。"""
@@ -80,7 +67,6 @@ tools: list[ToolParam] = [
             "功能：返回运行此程序的计算机当前本地日期和时间。"
             "适用：当用户询问现在几点、今天的日期，或任务需要当前本地时间时使用。"
             "不适用：不要用于查询历史时间、未来时间、其他时区时间或进行日期推算。"
-            "参数：无，调用时传入空对象，例如：{}。"
         ),
         "input_schema": {
             "type": "object",
@@ -145,13 +131,7 @@ while True:
 
     print(f"\n========== 第 {round_number} 轮模型响应 ==========")
     print("stop_reason:", response.stop_reason)
-    #print("response.content:")
-    #pprint(
-    #    [block.model_dump() for block in response.content],
-    #    sort_dicts=False,
-    #    width=100,
-    #)
-
+    
     # 每一轮都把模型的完整输出保存到对话历史中。
     messages.append(
         {
@@ -159,12 +139,12 @@ while True:
             "content": response.content,
         }
     )
-    print_messages("加入 assistant 回复后的 messages", messages)
 
     if response.stop_reason == "end_turn":
         for block in response.content:
             if block.type == "text":
                 print("最终回答：", block.text)
+        #print_messages("最终对话历史", messages)
         break
 
     if response.stop_reason != "tool_use":
@@ -178,7 +158,6 @@ while True:
         elif block.type == "tool_use":
             print(f"[call] 模型要调用 {block.name}，参数 {block.input}")
 
-            # output = run_tool(block.name, block.input)
             func = TOOL_FUNCTIONS[block.name]
             output = func(**block.input)
 
