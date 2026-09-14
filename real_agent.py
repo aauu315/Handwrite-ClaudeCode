@@ -1,13 +1,13 @@
 import os
-
 import anthropic
+from anthropic.types import MessageParam, ToolParam, ToolResultBlockParam
 
 from datetime import datetime
 from pprint import pprint
 
-from anthropic.types import MessageParam, ToolParam, ToolResultBlockParam
+from build_context import build_context
 
-#todo:目前已有的优化计划：1.报错返回统一放主循环
+
 
 
 def calculator(expression: str) -> int | float:
@@ -122,9 +122,11 @@ round_number = 0
 
 while True:
     round_number += 1
+    system, messages = build_context(messages)
     response = client.messages.create(
         model="deepseek-v4-flash",
         max_tokens=1024,
+        system=system,
         tools=tools,
         messages=messages,
     )
