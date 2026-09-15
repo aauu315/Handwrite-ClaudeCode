@@ -6,6 +6,7 @@ from datetime import datetime
 from pprint import pprint
 
 from build_context import build_context
+import file_tools
 
 
 
@@ -19,21 +20,14 @@ def get_current_time() -> str:
     """获取当前时间"""
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-def read_file(file_path: str) -> str:
-    """读取文件内容"""
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            return f.read()
-    except FileNotFoundError:
-        return f"错误：文件 {file_path} 未找到，请确认路径是否正确。"
-    except Exception as e:
-        return f"读取文件时发生错误：{e}"
-
 
 TOOL_FUNCTIONS = {
     "calculator": calculator,
     "get_current_time": get_current_time,
-    "read_file": read_file,
+    "list_files": file_tools.list_files,
+    "read_file": file_tools.read_file,
+    "write_file": file_tools.write_file,
+    "edit_file": file_tools.edit_file,
 }
 
 def print_messages(label: str, history: list[MessageParam]) -> None:
@@ -75,16 +69,37 @@ tools: list[ToolParam] = [
         },
     },
     {
+        "name": "list_files",
+        "description": (
+            "功能：按glob模式列出工作区里的文件名，例如'*.py'、[**/*.md'。只返回文件名，不读内容。"
+            "适用：想知道有哪些文件、文件在哪时用它。"
+            "不适用：不要用于读取文件内容、执行文件或访问工作区外的路径。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": (
+                        "要匹配的文件名模式，可以使用通配符，"
+                        "例如：*.py、**/*.md。"
+                    ),
+                }
+            },
+            "required": ["pattern"],
+        },
+    },
+    {
         "name": "read_file",
         "description": (
-            "功能：读取指定 UTF-8 文本文件，并返回文件的完整内容。"
+            "功能：读取指定 UTF-8 文本文件，并返回文件的完整内容。想改一个文件之前必须先读一遍，否则会被edit_file拒绝。"
             "适用：当用户明确要求查看某个文本文件，或回答问题必须读取指定文件时使用。"
             "不适用：不要用于读取目录、二进制文件、用户未授权或与当前任务无关的敏感文件。"
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "file_path": {
+                "path": {
                     "type": "string",
                     "description": (
                         "要读取的文本文件路径，可以是相对路径或绝对路径，"
@@ -92,7 +107,67 @@ tools: list[ToolParam] = [
                     ),
                 }
             },
-            "required": ["file_path"],
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "write_file",
+        "description": (
+            "功能：将指定内容写入 UTF-8 文本文件，新建或覆盖原有内容。"
+            "适用：当用户明确要求创建新文件或完全重写小规模文件时使用。"
+            "不适用：不要用于编辑文件的部分内容，需要进行部分编辑时请使用 edit_file"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": (
+                        "要写入的文本文件路径，可以是相对路径或绝对路径，"
+                        "例如：output.txt。"
+                    ),
+                },
+                "content": {
+                    "type": "string",
+                    "description": (
+                        "要写入文件的文本内容。"
+                    ),
+                },
+            },
+            "required": ["path", "content"],
+        },
+    },
+    {
+        "name": "edit_file",
+        "description": (
+            "功能：在已读取的文本文件中查找指定字符串，并将其替换为新的字符串。"
+            "适用：当用户明确要求修改文件内容，或任务需要更新文件中的特定文本时使用。"
+            "不适用：不要用于编辑未读取的文件、二进制文件或用户未授权的敏感文件。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": (
+                        "要编辑的文本文件路径，可以是相对路径或绝对路径，"
+                        "例如：config.txt。"
+                    ),
+                },
+                "old_string": {
+                    "type": "string",
+                    "description": (
+                        "要替换的旧字符串，必须在文件中唯一出现。"
+                    ),
+                },
+                "new_string": {
+                    "type": "string",
+                    "description": (
+                        "用于替换的新的字符串。"
+                    ),
+                },
+            },
+            "required": ["path", "old_string", "new_string"],
         },
     }
 
@@ -114,7 +189,7 @@ client = anthropic.Anthropic(
 messages: list[MessageParam] = [
     {
         "role": "user",
-        "content": "帮我算 12 * (3 + 4)，顺便查一下现在的时间",
+        "content": input("请输入你的问题或任务描述："),
     }
 ]
 
@@ -146,7 +221,7 @@ while True:
         for block in response.content:
             if block.type == "text":
                 print("最终回答：", block.text)
-        #print_messages("最终对话历史", messages)
+        print_messages("\n最终对话历史", messages)
         break
 
     if response.stop_reason != "tool_use":
