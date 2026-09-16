@@ -13,3 +13,6 @@ wheels/
 .env
 .env.*
 .vscode/
+
+# Local-only agent implementation
+/fake_agent.py
