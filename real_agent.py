@@ -7,7 +7,7 @@ from pprint import pprint
 
 from build_context import build_context
 import file_tools
-
+import shell_tools
 
 
 
@@ -28,6 +28,7 @@ TOOL_FUNCTIONS = {
     "read_file": file_tools.read_file,
     "write_file": file_tools.write_file,
     "edit_file": file_tools.edit_file,
+    "run_shell": shell_tools.run_shell,
 }
 
 def print_messages(label: str, history: list[MessageParam]) -> None:
@@ -169,6 +170,30 @@ tools: list[ToolParam] = [
             },
             "required": ["path", "old_string", "new_string"],
         },
+    },
+    {
+        "name": "run_shell",
+        "description": (
+            "功能：在当前项目目录中执行一条系统命令，"
+            "返回退出码、标准输出和标准错误。"
+            "适用：运行测试、执行脚本、检查项目状态，"
+            "以及验证代码修改是否正确。"
+            "判断：退出码 0 通常表示成功；非 0 表示失败，"
+            "失败时应先阅读标准错误，再决定下一步。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": (
+                        "要执行的完整命令，例如 pytest、"
+                        "python example.py。"
+                    ),
+                }
+            },
+            "required": ["command"],
+        },
     }
 
 ]
@@ -221,12 +246,18 @@ while True:
         for block in response.content:
             if block.type == "text":
                 print("最终回答：", block.text)
-        print_messages("\n最终对话历史", messages)
+        #print_messages("\n最终对话历史", messages)
+        break
+
+    elif response.stop_reason == "max_tokens":
+        print_messages("\n当前对话历史", messages)
+        print("[警告] 单轮回应达到最大tokens，模型输出被截断，可能未完成回答。")
         break
 
     if response.stop_reason != "tool_use":
+        print_messages("\n最终对话历史", messages)
         raise RuntimeError(f"模型以未知原因结束：{response.stop_reason}")
-
+        
     tool_results: list[ToolResultBlockParam] = []
 
     for block in response.content:
