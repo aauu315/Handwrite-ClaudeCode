@@ -10,6 +10,7 @@ from build_context import build_context
 import file_tools
 import shell_tools
 from permissions import ask_user, check_permission
+from tool_errors import ToolError
 
 
 
@@ -40,6 +41,8 @@ def run_tool(tool_name: str, tool_input: dict) -> tuple[str, bool]:
         func = TOOL_FUNCTIONS[tool_name]
         output = func(**tool_input)
         return str(output), False
+    except ToolError as error:
+        return str(error), True
     except Exception:
         error_traceback = traceback.format_exc()
         return (
