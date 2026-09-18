@@ -1,4 +1,5 @@
 import os
+import traceback
 import anthropic
 from anthropic.types import MessageParam, ToolParam, ToolResultBlockParam
 
@@ -31,6 +32,21 @@ TOOL_FUNCTIONS = {
     "edit_file": file_tools.edit_file,
     "run_shell": shell_tools.run_shell,
 }
+
+
+def run_tool(tool_name: str, tool_input: dict) -> tuple[str, bool]:
+    """执行已经通过权限检查的工具，并把意外异常转换为失败结果。"""
+    try:
+        func = TOOL_FUNCTIONS[tool_name]
+        output = func(**tool_input)
+        return str(output), False
+    except Exception:
+        error_traceback = traceback.format_exc()
+        return (
+            f"工具 '{tool_name}' 执行时发生异常：\n{error_traceback}",
+            True,
+        )
+
 
 def print_messages(label: str, history: list[MessageParam]) -> None:
     """用容易阅读的格式完整打印当前对话历史。"""
@@ -285,8 +301,7 @@ while True:
                 )
                 is_error = True
             else:
-                func = TOOL_FUNCTIONS[block.name]
-                output = func(**block.input)
+                output, is_error = run_tool(block.name, block.input)
 
             print("[recv] 工具返回：", output)
 
