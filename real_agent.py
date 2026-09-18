@@ -8,6 +8,7 @@ from pprint import pprint
 from build_context import build_context
 import file_tools
 import shell_tools
+from permissions import ask_user, check_permission
 
 
 
@@ -266,18 +267,37 @@ while True:
         elif block.type == "tool_use":
             print(f"[call] 模型要调用 {block.name}，参数 {block.input}")
 
-            func = TOOL_FUNCTIONS[block.name]
-            output = func(**block.input)
+            decision = check_permission(block.name, block.input)
+            is_error = False
+
+            if decision == "deny":
+                output = (
+                    "这次工具调用已被安全策略拒绝。"
+                    "请不要重复尝试同一种危险操作，请改用更安全的做法。"
+                )
+                is_error = True
+            elif decision == "confirm" and not ask_user(
+                block.name, block.input
+            ):
+                output = (
+                    "用户拒绝了这次工具调用。"
+                    "请不要重复尝试同一种操作，请改用更安全的做法。"
+                )
+                is_error = True
+            else:
+                func = TOOL_FUNCTIONS[block.name]
+                output = func(**block.input)
 
             print("[recv] 工具返回：", output)
 
-            tool_results.append(
-                {
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": str(output),
-                }
-            )
+            tool_result: ToolResultBlockParam = {
+                "type": "tool_result",
+                "tool_use_id": block.id,
+                "content": str(output),
+            }
+            if is_error:
+                tool_result["is_error"] = True
+            tool_results.append(tool_result)
 
     # 工具结果必须回传对应的 tool_use_id，模型才能知道结果属于哪个请求。
     messages.append({"role": "user", "content": tool_results})
