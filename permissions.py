@@ -15,7 +15,7 @@ MUTATING_TOOLS = {
     "write_memory",
 }
 
-KNOWN_TOOLS = READ_ONLY_TOOLS | MUTATING_TOOLS | {"run_shell"}
+KNOWN_TOOLS = READ_ONLY_TOOLS | MUTATING_TOOLS | {"run_shell", "spawn_agent"}
 
 
 # 只对完整命令进行匹配；稍微复杂的命令交给用户确认。
@@ -56,6 +56,9 @@ def check_permission(tool_name: str, tool_input: dict) -> str:
         return "allow"
 
     if tool_name in MUTATING_TOOLS:
+        return "confirm"
+
+    if tool_name == "spawn_agent":
         return "confirm"
 
     command = normalize_command(str(tool_input.get("command", "")))

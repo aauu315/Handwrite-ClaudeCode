@@ -9,7 +9,7 @@ from pprint import pprint
 from build_context import build_context
 import file_tools
 import shell_tools
-from permissions import ask_user, check_permission
+from permissions import READ_ONLY_TOOLS, ask_user, check_permission
 from tool_errors import ToolError
 
 
@@ -24,6 +24,7 @@ def get_current_time() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 MAX_AGENT_ROUNDS: int | None = None
+CHILD_MAX_ROUNDS = 10
 COMPRESSION_TRIGGER_TOKENS = 30_000
 KEEP_RECENT_MESSAGES = 4
 SUMMARY_MODEL = "deepseek-v4-flash"
@@ -351,6 +352,25 @@ tools: list[ToolParam] = [
             "required": ["content"],
         },
     },
+    {
+        "name": "spawn_agent",
+        "description": (
+            "派出一名只读调查员，独立调查一个边界明确的子任务，"
+            "只把有依据的简洁结论带回主对话。"
+            "适用于需要阅读多个文件或调查独立模块的任务；简单问题不要派。"
+            "调查员不能修改文件、运行命令或继续派出调查员。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": "写清调查目标、范围，以及需要返回的发现和文件依据。",
+                },
+            },
+            "required": ["task"],
+        },
+    },
 
 ]
 
@@ -367,6 +387,159 @@ client = anthropic.Anthropic(
     base_url="https://api.deepseek.com/anthropic",
 )
 
+def run_agent_loop(
+    messages: list[MessageParam],
+    available_tools: list[ToolParam],
+    allowed_tool_names: set[str],
+    max_rounds: int | None,
+) -> str | None:
+    """运行一份独立的对话历史，完成时返回最终文字。"""
+    if max_rounds is not None and max_rounds <= 0:
+        raise ValueError("max_rounds 必须是正整数或者 None。")
+
+    round_number = 0
+    current_tokens = 0
+    total_tokens = 0
+
+    while True:
+        round_number += 1
+
+        messages, compression_tokens = compress_messages(
+            messages,
+            current_tokens,
+        )
+        total_tokens += compression_tokens
+
+        system, messages = build_context(messages)
+        response: Message = client.messages.create(
+            model="deepseek-v4-flash",
+            max_tokens=1024,
+            system=system,
+            tools=available_tools,
+            messages=messages,
+        )
+
+        current_tokens = response_token_count(response)
+        total_tokens += current_tokens
+
+        print(f"\n========== 第 {round_number} 轮模型响应 ==========")
+        print("stop_reason:", response.stop_reason)
+        print("当前轮 token 用量:", current_tokens)
+        print("本次会话累计 token 用量:", total_tokens)
+
+        # 每一轮都把模型的完整输出保存到对话历史中。
+        messages.append(
+            {
+                "role": "assistant",
+                "content": response.content,
+            }
+        )
+
+        if response.stop_reason == "end_turn":
+            final_text = "\n".join(
+                block.text
+                for block in response.content
+                if block.type == "text"
+            ).strip()
+            print("最终回答：", final_text)
+            return final_text
+
+        elif response.stop_reason == "max_tokens":
+            print_messages("\n当前对话历史", messages)
+            print("[警告] 单轮回应达到最大tokens，模型输出被截断，可能未完成回答。")
+            return None
+
+        if response.stop_reason != "tool_use":
+            print_messages("\n最终对话历史", messages)
+            raise RuntimeError(f"模型以未知原因结束：{response.stop_reason}")
+
+        tool_results: list[ToolResultBlockParam] = []
+
+        for block in response.content:
+            if block.type == "text":
+                print("[think] 模型边说边想：", block.text)
+            elif block.type == "tool_use":
+                print(f"[call] 模型要调用 {block.name}，参数 {block.input}")
+
+                if block.name not in allowed_tool_names:
+                    if block.name not in TOOL_FUNCTIONS:
+                        output = (
+                            "这次工具调用已被安全策略拒绝。"
+                            "请不要重复尝试同一种危险操作，请改用更安全的做法。"
+                        )
+                    else:
+                        output = f"当前 Agent 无权使用工具 '{block.name}'。"
+                    is_error = True
+                else:
+                    decision = check_permission(block.name, block.input)
+                    is_error = False
+
+                    if decision == "deny":
+                        output = (
+                            "这次工具调用已被安全策略拒绝。"
+                            "请不要重复尝试同一种危险操作，请改用更安全的做法。"
+                        )
+                        is_error = True
+                    elif decision == "confirm" and not ask_user(
+                        block.name, block.input
+                    ):
+                        output = (
+                            "用户拒绝了这次工具调用。"
+                            "请不要重复尝试同一种操作，请改用更安全的做法。"
+                        )
+                        is_error = True
+                    else:
+                        output, is_error = run_tool(block.name, block.input)
+
+                print("[recv] 工具返回：", output)
+
+                tool_result: ToolResultBlockParam = {
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": str(output),
+                }
+                if is_error:
+                    tool_result["is_error"] = True
+                tool_results.append(tool_result)
+
+        # 工具结果必须回传对应的 tool_use_id，模型才能知道结果属于哪个请求。
+        messages.append({"role": "user", "content": tool_results})
+
+        if max_rounds is not None and round_number >= max_rounds:
+            print("达到最大执行轮数，任务尚未完成。")
+            print_messages("当前对话历史", messages)
+            return None
+
+
+def spawn_agent(task: str) -> str:
+    """用全新历史运行一名只读调查员，只返回最终结论。"""
+    if not task.strip():
+        raise ToolError("调查任务不能为空。")
+
+    child_messages: list[MessageParam] = [
+        {
+            "role": "user",
+            "content": (
+                "请只读调查下面的任务。最后简要说明关键发现、对应文件或函数，"
+                "以及尚未确认的地方；不要复制大段文件原文。\n\n"
+                f"任务：{task}"
+            ),
+        }
+    ]
+    child_tools = [tool for tool in tools if tool["name"] in READ_ONLY_TOOLS]
+    result = run_agent_loop(
+        messages=child_messages,
+        available_tools=child_tools,
+        allowed_tool_names=READ_ONLY_TOOLS,
+        max_rounds=CHILD_MAX_ROUNDS,
+    )
+    if not result:
+        raise ToolError("调查员未能完成任务。")
+    return result
+
+
+TOOL_FUNCTIONS["spawn_agent"] = spawn_agent
+
 messages: list[MessageParam] = [
     {
         "role": "user",
@@ -374,106 +547,9 @@ messages: list[MessageParam] = [
     }
 ]
 
-round_number = 0
-current_tokens = 0
-total_tokens = 0
-
-if MAX_AGENT_ROUNDS is not None and MAX_AGENT_ROUNDS <= 0:
-    raise ValueError("MAX_AGENT_ROUNDS 必须是正整数或者 None。")
-
-while True:
-    round_number += 1
-
-    messages, compression_tokens = compress_messages(
-        messages,
-        current_tokens,
-    )
-    total_tokens += compression_tokens
-
-    system, messages = build_context(messages)
-    response: Message = client.messages.create(
-        model="deepseek-v4-flash",
-        max_tokens=1024,
-        system=system,
-        tools=tools,
-        messages=messages,
-    )
-
-    current_tokens = response_token_count(response)
-    total_tokens += current_tokens
-
-    print(f"\n========== 第 {round_number} 轮模型响应 ==========")
-    print("stop_reason:", response.stop_reason)
-    print("当前轮 token 用量:", current_tokens)
-    print("本次会话累计 token 用量:", total_tokens)
-    
-    # 每一轮都把模型的完整输出保存到对话历史中。
-    messages.append(
-        {
-            "role": "assistant",
-            "content": response.content,
-        }
-    )
-
-    if response.stop_reason == "end_turn":
-        for block in response.content:
-            if block.type == "text":
-                print("最终回答：", block.text)
-        #print_messages("\n最终对话历史", messages)
-        break
-
-    elif response.stop_reason == "max_tokens":
-        print_messages("\n当前对话历史", messages)
-        print("[警告] 单轮回应达到最大tokens，模型输出被截断，可能未完成回答。")
-        break
-
-    if response.stop_reason != "tool_use":
-        print_messages("\n最终对话历史", messages)
-        raise RuntimeError(f"模型以未知原因结束：{response.stop_reason}")
-        
-    tool_results: list[ToolResultBlockParam] = []
-
-    for block in response.content:
-        if block.type == "text":
-            print("[think] 模型边说边想：", block.text)
-        elif block.type == "tool_use":
-            print(f"[call] 模型要调用 {block.name}，参数 {block.input}")
-
-            decision = check_permission(block.name, block.input)
-            is_error = False
-
-            if decision == "deny":
-                output = (
-                    "这次工具调用已被安全策略拒绝。"
-                    "请不要重复尝试同一种危险操作，请改用更安全的做法。"
-                )
-                is_error = True
-            elif decision == "confirm" and not ask_user(
-                block.name, block.input
-            ):
-                output = (
-                    "用户拒绝了这次工具调用。"
-                    "请不要重复尝试同一种操作，请改用更安全的做法。"
-                )
-                is_error = True
-            else:
-                output, is_error = run_tool(block.name, block.input)
-
-            print("[recv] 工具返回：", output)
-
-            tool_result: ToolResultBlockParam = {
-                "type": "tool_result",
-                "tool_use_id": block.id,
-                "content": str(output),
-            }
-            if is_error:
-                tool_result["is_error"] = True
-            tool_results.append(tool_result)
-
-    # 工具结果必须回传对应的 tool_use_id，模型才能知道结果属于哪个请求。
-    messages.append({"role": "user", "content": tool_results})
-
-    if MAX_AGENT_ROUNDS is not None and round_number >= MAX_AGENT_ROUNDS:
-        print("达到最大执行轮数，任务尚未完成。")
-        print_messages("当前对话历史", messages)
-        break
+run_agent_loop(
+    messages=messages,
+    available_tools=tools,
+    allowed_tool_names=set(TOOL_FUNCTIONS),
+    max_rounds=MAX_AGENT_ROUNDS,
+)
