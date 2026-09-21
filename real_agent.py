@@ -1,7 +1,7 @@
 import os
 import traceback
 import anthropic
-from anthropic.types import MessageParam, ToolParam, ToolResultBlockParam
+from anthropic.types import MessageParam, ToolParam, ToolResultBlockParam, Message
 
 from datetime import datetime
 from pprint import pprint
@@ -23,6 +23,28 @@ def get_current_time() -> str:
     """获取当前时间"""
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+MAX_AGENT_ROUNDS: int | None = None
+COMPRESSION_TRIGGER_TOKENS = 30_000
+KEEP_RECENT_MESSAGES = 4
+SUMMARY_MODEL = "deepseek-v4-flash"
+
+COMPRESSION_PROMPT = """
+你正在压缩一段 Agent 的较早对话历史。
+
+请只输出一段简洁、准确、可以供 Agent 继续工作的摘要，不要继续执行任务。
+
+摘要必须保留：
+1. 用户最初的目标和后来补充的要求。
+2. 用户明确提出的限制、偏好和禁止事项。
+3. 已经查明的关键事实和已经作出的决定。
+4. 已经读取或修改过的重要文件及其作用。
+5. 已经执行的重要命令、结果和错误。
+6. 已经完成的工作。
+7. 尚未完成的事项和下一步应该做什么。
+
+不要编造历史中没有的信息。
+可以删除寒暄、重复解释、已经被证明无效的尝试和冗长工具输出。
+"""
 
 TOOL_FUNCTIONS = {
     "calculator": calculator,
@@ -55,6 +77,87 @@ def print_messages(label: str, history: list[MessageParam]) -> None:
     """用容易阅读的格式完整打印当前对话历史。"""
     print(f"\n--- {label} ---")
     pprint(history, sort_dicts=False, width=100)
+
+
+def response_token_count(response: Message) -> int:
+    """返回一次模型调用的输入和输出 token 总数。"""
+    return response.usage.input_tokens + response.usage.output_tokens
+
+
+def contains_tool_result(message: MessageParam) -> bool:
+    """判断一条消息中是否包含工具执行结果。"""
+    content = message["content"]
+
+    if isinstance(content, str):
+        return False
+
+    return any(
+        isinstance(block, dict) and block.get("type") == "tool_result"
+        for block in content
+    )
+
+
+def compress_messages(
+    history: list[MessageParam],
+    current_tokens: int,
+) -> tuple[list[MessageParam], int]:
+    """超过触发线时，将较旧历史压缩成一条摘要消息。"""
+    if current_tokens < COMPRESSION_TRIGGER_TOKENS:
+        return history, 0
+
+    if len(history) <= KEEP_RECENT_MESSAGES:
+        return history, 0
+
+    cut_index = len(history) - KEEP_RECENT_MESSAGES
+
+    # 不要把 assistant 的 tool_use 和紧随其后的 user tool_result 分开。
+    if contains_tool_result(history[cut_index]):
+        cut_index -= 1
+
+    if cut_index <= 0:
+        return history, 0
+
+    old_messages = history[:cut_index]
+    recent_messages = history[cut_index:]
+
+    summary_response: Message = client.messages.create(
+        model=SUMMARY_MODEL,
+        max_tokens=1024,
+        system=COMPRESSION_PROMPT,
+        messages=old_messages,
+    )
+
+    summary_text = "\n".join(
+        block.text
+        for block in summary_response.content
+        if block.type == "text"
+    ).strip()
+
+    if not summary_text:
+        raise RuntimeError("上下文压缩失败：模型没有返回摘要文本。")
+
+    summary_message: MessageParam = {
+        "role": "user",
+        "content": (
+            "以下是较早对话的压缩摘要。请把它当作已发生的历史，"
+            "继续完成尚未结束的任务：\n\n"
+            f"{summary_text}"
+        ),
+    }
+
+    compressed_history = [summary_message, *recent_messages]
+    compression_tokens = response_token_count(summary_response)
+
+    print(
+        f"[compact] 已将 {len(old_messages)} 条旧消息压缩成 1 条摘要，"
+        f"保留最近 {len(recent_messages)} 条原始消息。"
+    )
+    print(f"[compact] 压缩后共有 {len(compressed_history)} 条消息。")
+    print(f"[compact] 摘要调用消耗 {compression_tokens} tokens。")
+    print("[compact] 摘要内容：")
+    print(summary_text)
+
+    return compressed_history, compression_tokens
 
 
 tools: list[ToolParam] = [
@@ -239,11 +342,23 @@ messages: list[MessageParam] = [
 ]
 
 round_number = 0
+current_tokens = 0
+total_tokens = 0
+
+if MAX_AGENT_ROUNDS is not None and MAX_AGENT_ROUNDS <= 0:
+    raise ValueError("MAX_AGENT_ROUNDS 必须是正整数或者 None。")
 
 while True:
     round_number += 1
+
+    messages, compression_tokens = compress_messages(
+        messages,
+        current_tokens,
+    )
+    total_tokens += compression_tokens
+
     system, messages = build_context(messages)
-    response = client.messages.create(
+    response: Message = client.messages.create(
         model="deepseek-v4-flash",
         max_tokens=1024,
         system=system,
@@ -251,8 +366,13 @@ while True:
         messages=messages,
     )
 
+    current_tokens = response_token_count(response)
+    total_tokens += current_tokens
+
     print(f"\n========== 第 {round_number} 轮模型响应 ==========")
     print("stop_reason:", response.stop_reason)
+    print("当前轮 token 用量:", current_tokens)
+    print("本次会话累计 token 用量:", total_tokens)
     
     # 每一轮都把模型的完整输出保存到对话历史中。
     messages.append(
@@ -319,3 +439,8 @@ while True:
 
     # 工具结果必须回传对应的 tool_use_id，模型才能知道结果属于哪个请求。
     messages.append({"role": "user", "content": tool_results})
+
+    if MAX_AGENT_ROUNDS is not None and round_number >= MAX_AGENT_ROUNDS:
+        print("达到最大执行轮数，任务尚未完成。")
+        print_messages("当前对话历史", messages)
+        break

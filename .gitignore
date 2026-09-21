@@ -13,3 +13,6 @@ wheels/
 .env
 .env.*
 .vscode/
+
+# ai测试，暂不上传
+tests/
