@@ -1,10 +1,15 @@
 import glob as _glob
 import os
+from datetime import date
 
 from tool_errors import ToolError
 
 WORKSPACE = os.path.abspath(".")
 _read_files = set()  # 记录已读取的文件路径
+
+MEMORY_PATH = "memory/MEMORY.md"
+
+
 def list_files(pattern:str = "*") -> str:
 	"""
 	列出当前工作目录及其子目录中匹配指定模式的文件。
@@ -73,3 +78,32 @@ def edit_file(path: str, old_string: str, new_string: str) -> str:
     with open(full, "w", encoding="utf-8") as f:
             f.write(text.replace(old_string, new_string))
     return f"已修改 '{path}'：替换了 1 处。"
+
+
+def read_memory() -> str:
+    """读取长期记忆；文件尚不存在时返回空字符串。"""
+    full = _safe_path(MEMORY_PATH)
+
+    try:
+        with open(full, "r", encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        return ""
+
+def write_memory(content: str) -> str:
+    """向固定的长期记忆文件追加一条带日期的记录。"""
+    content = " ".join(content.split())
+    if not content:
+        raise ToolError("记忆内容不能为空。")
+
+    full = _safe_path(MEMORY_PATH)
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+
+    with open(full, "a+", encoding="utf-8") as f:
+        f.seek(0)
+        existing = f.read()
+        if existing and not existing.endswith("\n"):
+            f.write("\n")
+        f.write(f"- [{date.today().isoformat()}] {content}\n")
+
+    return f"已将一条长期记忆追加到 '{MEMORY_PATH}'。"

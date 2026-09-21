@@ -6,11 +6,13 @@ READ_ONLY_TOOLS = {
     "get_current_time",
     "list_files",
     "read_file",
+    "read_memory",
 }
 
 MUTATING_TOOLS = {
     "write_file",
     "edit_file",
+    "write_memory",
 }
 
 KNOWN_TOOLS = READ_ONLY_TOOLS | MUTATING_TOOLS | {"run_shell"}

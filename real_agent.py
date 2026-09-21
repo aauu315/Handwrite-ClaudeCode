@@ -53,6 +53,8 @@ TOOL_FUNCTIONS = {
     "read_file": file_tools.read_file,
     "write_file": file_tools.write_file,
     "edit_file": file_tools.edit_file,
+    "read_memory": file_tools.read_memory,
+    "write_memory": file_tools.write_memory,
     "run_shell": shell_tools.run_shell,
 }
 
@@ -317,7 +319,38 @@ tools: list[ToolParam] = [
             },
             "required": ["command"],
         },
-    }
+    },
+    {
+        "name": "read_memory",
+        "description": (
+            "读取本项目的长期记忆。记忆也会自动加入系统上下文；"
+            "只有需要明确核对记忆原文时才调用。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
+        "name": "write_memory",
+        "description": (
+            "向本项目的固定记忆文件追加一条带日期的长期记忆。"
+            "仅记录下次会话仍有用的用户偏好、项目约定或反复遇到的坑。"
+            "不要记录临时任务进度、完整文件内容、密码或 API Key。"
+            "写入前会请求用户确认。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "description": "一条简短、明确、适合跨会话保存的事实或约定。",
+                },
+            },
+            "required": ["content"],
+        },
+    },
 
 ]
 
