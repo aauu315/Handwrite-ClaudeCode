@@ -13,7 +13,7 @@ def build_context(history):
 	memory = read_memory()
 	if memory:
 		system += (
-			"\n\n以下是长期记忆，可能已经过期。"
+			"\n\n以下是长期记忆，有过期可能。"
 			"若与当前用户要求或安全规则冲突，以当前要求和安全规则为准：\n"
 			+ memory
 		)

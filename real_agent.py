@@ -1,6 +1,8 @@
 import os
 import traceback
+from pathlib import Path
 import anthropic
+from dotenv import load_dotenv
 from anthropic.types import MessageParam, ToolParam, ToolResultBlockParam, Message
 
 from datetime import datetime
@@ -375,9 +377,11 @@ tools: list[ToolParam] = [
 ]
 
 
+load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
+
 if not os.environ.get("ANTHROPIC_API_KEY"):
     raise RuntimeError(
-        "没有找到 ANTHROPIC_API_KEY。请先在当前终端设置 DeepSeek API Key。"
+        "没有找到 ANTHROPIC_API_KEY。请在项目根目录的 .env 中设置 DeepSeek API Key。"
     )
 
 
@@ -411,21 +415,30 @@ def run_agent_loop(
         total_tokens += compression_tokens
 
         system, messages = build_context(messages)
-        response: Message = client.messages.create(
+
+        print(f"\n========== 第 {round_number} 轮模型响应 ==========")
+
+        with client.messages.stream(
             model="deepseek-v4-flash",
             max_tokens=1024,
             system=system,
             tools=available_tools,
             messages=messages,
-        )
+        ) as stream:
+            printed_text = False
+            for text in stream.text_stream:
+                print(text, end="", flush=True)
+                printed_text = True
+            response: Message = stream.get_final_message()
+
+        if printed_text:
+            print()
 
         current_tokens = response_token_count(response)
         total_tokens += current_tokens
-
-        print(f"\n========== 第 {round_number} 轮模型响应 ==========")
+        
         print("stop_reason:", response.stop_reason)
-        print("当前轮 token 用量:", current_tokens)
-        print("本次会话累计 token 用量:", total_tokens)
+        
 
         # 每一轮都把模型的完整输出保存到对话历史中。
         messages.append(
@@ -441,7 +454,7 @@ def run_agent_loop(
                 for block in response.content
                 if block.type == "text"
             ).strip()
-            print("最终回答：", final_text)
+            #print_messages("当前对话历史", messages)
             return final_text
 
         elif response.stop_reason == "max_tokens":
@@ -456,9 +469,7 @@ def run_agent_loop(
         tool_results: list[ToolResultBlockParam] = []
 
         for block in response.content:
-            if block.type == "text":
-                print("[think] 模型边说边想：", block.text)
-            elif block.type == "tool_use":
+            if block.type == "tool_use":
                 print(f"[call] 模型要调用 {block.name}，参数 {block.input}")
 
                 if block.name not in allowed_tool_names:
@@ -505,6 +516,9 @@ def run_agent_loop(
         # 工具结果必须回传对应的 tool_use_id，模型才能知道结果属于哪个请求。
         messages.append({"role": "user", "content": tool_results})
 
+        print("当前轮 token 用量:", current_tokens)
+        print("本次会话累计 token 用量:", total_tokens)
+        
         if max_rounds is not None and round_number >= max_rounds:
             print("达到最大执行轮数，任务尚未完成。")
             print_messages("当前对话历史", messages)
