@@ -1,21 +1,8 @@
+import inspect
 from pprint import pformat
+from typing import get_type_hints
 
-
-READ_ONLY_TOOLS = {
-    "calculator",
-    "get_current_time",
-    "list_files",
-    "read_file",
-    "read_memory",
-}
-
-MUTATING_TOOLS = {
-    "write_file",
-    "edit_file",
-    "write_memory",
-}
-
-KNOWN_TOOLS = READ_ONLY_TOOLS | MUTATING_TOOLS | {"run_shell", "spawn_agent"}
+from tool_registry import ToolSpec
 
 
 # 只对完整命令进行匹配；稍微复杂的命令交给用户确认。
@@ -47,19 +34,48 @@ def normalize_command(command: str) -> str:
     return " ".join(command.strip().lower().split())
 
 
-def check_permission(tool_name: str, tool_input: dict) -> str:
-    """返回 allow、confirm 或 deny，决定一次工具调用能否执行。"""
-    if tool_name not in KNOWN_TOOLS:
-        return "deny"
+def validate_tool_input(
+    tool: ToolSpec,
+    tool_input: dict,
+) -> str | None:
+    """第一步：检查参数能否安全地传给已经注册的工具函数。"""
+    if not isinstance(tool_input, dict):
+        return "工具参数必须是一个对象。"
 
-    if tool_name in READ_ONLY_TOOLS:
+    try:
+        bound_arguments = inspect.signature(tool.function).bind(**tool_input)
+    except TypeError as error:
+        return f"工具 '{tool.name}' 的参数不完整或不匹配：{error}"
+
+    try:
+        type_hints = get_type_hints(tool.function)
+    except (NameError, TypeError):
+        type_hints = {}
+
+    for parameter_name, value in bound_arguments.arguments.items():
+        expected_type = type_hints.get(parameter_name)
+        if isinstance(expected_type, type) and not isinstance(value, expected_type):
+            return (
+                f"工具 '{tool.name}' 的参数 '{parameter_name}' 类型错误："
+                f"应为 {expected_type.__name__}，实际为 {type(value).__name__}。"
+            )
+
+    return None
+
+
+def check_permission(tool: ToolSpec, tool_input: dict) -> str:
+    """第二步：按注册的权限类型决定自动允许、询问用户或拒绝。"""
+    if tool.permission == "read_only":
         return "allow"
 
-    if tool_name in MUTATING_TOOLS:
+    if tool.permission == "mutating":
         return "confirm"
 
-    if tool_name == "spawn_agent":
+    if tool.permission == "delegate":
         return "allow"
+
+    if tool.permission != "shell":
+        return "deny"
 
     command = normalize_command(str(tool_input.get("command", "")))
     if command in HARD_DENY_COMMANDS:
@@ -67,6 +83,33 @@ def check_permission(tool_name: str, tool_input: dict) -> str:
     if command in SAFE_SHELL_COMMANDS:
         return "allow"
     return "confirm"
+
+
+def check_tool_call(
+    tool: ToolSpec | None,
+    tool_input: dict,
+    allowed_tool_names: set[str],
+) -> tuple[str, str]:
+    """第三步：统一检查工具注册、Agent 范围、参数和操作权限。"""
+    if tool is None:
+        return "deny", "程序没有注册模型请求的工具。"
+
+    if tool.name not in allowed_tool_names:
+        return "deny", f"当前 Agent 无权使用工具 '{tool.name}'。"
+
+    validation_error = validate_tool_input(tool, tool_input)
+    if validation_error:
+        return "invalid", validation_error
+
+    decision = check_permission(tool, tool_input)
+    if decision == "deny":
+        return (
+            "deny",
+            "这次工具调用已被安全策略拒绝。"
+            "请不要重复尝试同一种危险操作，请改用更安全的做法。",
+        )
+
+    return decision, ""
 
 
 def ask_user(tool_name: str, tool_input: dict) -> bool:
