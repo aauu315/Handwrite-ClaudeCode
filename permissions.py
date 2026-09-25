@@ -59,7 +59,7 @@ def check_permission(tool_name: str, tool_input: dict) -> str:
         return "confirm"
 
     if tool_name == "spawn_agent":
-        return "confirm"
+        return "allow"
 
     command = normalize_command(str(tool_input.get("command", "")))
     if command in HARD_DENY_COMMANDS:
