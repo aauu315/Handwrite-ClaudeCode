@@ -1,5 +1,6 @@
 import os
 import traceback
+from dataclasses import dataclass
 from pathlib import Path
 import anthropic
 from dotenv import load_dotenv
@@ -30,6 +31,17 @@ CHILD_MAX_ROUNDS = 10
 COMPRESSION_TRIGGER_TOKENS = 30_000
 KEEP_RECENT_MESSAGES = 4
 SUMMARY_MODEL = "deepseek-v4-flash"
+
+
+@dataclass
+class AgentState:
+    round_number: int = 0
+    current_tokens: int = 0
+    total_tokens: int = 0
+
+
+class GenerationInterrupted(Exception):
+    """表示用户中断了当前 Agent 的执行。"""
 
 COMPRESSION_PROMPT = """
 你正在压缩一段 Agent 的较早对话历史。
@@ -68,6 +80,8 @@ def run_tool(tool_name: str, tool_input: dict) -> tuple[str, bool]:
         func = TOOL_FUNCTIONS[tool_name]
         output = func(**tool_input)
         return str(output), False
+    except GenerationInterrupted:
+        raise
     except ToolError as error:
         return str(error), True
     except Exception:
@@ -396,46 +410,56 @@ def run_agent_loop(
     available_tools: list[ToolParam],
     allowed_tool_names: set[str],
     max_rounds: int | None,
+    state: AgentState | None = None,
 ) -> str | None:
     """运行一份独立的对话历史，完成时返回最终文字。"""
     if max_rounds is not None and max_rounds <= 0:
         raise ValueError("max_rounds 必须是正整数或者 None。")
 
-    round_number = 0
-    current_tokens = 0
-    total_tokens = 0
+    if state is None:
+        state = AgentState()
 
     while True:
-        round_number += 1
+        state.round_number += 1
 
-        messages, compression_tokens = compress_messages(
+        compressed_messages, compression_tokens = compress_messages(
             messages,
-            current_tokens,
+            state.current_tokens,
         )
-        total_tokens += compression_tokens
+        messages[:] = compressed_messages
+        state.total_tokens += compression_tokens
 
         system, messages = build_context(messages)
 
-        print(f"\n========== 第 {round_number} 轮模型响应 ==========")
+        print(f"\n========== 第 {state.round_number} 轮模型响应 ==========")
 
-        with client.messages.stream(
-            model="deepseek-v4-flash",
-            max_tokens=1024,
-            system=system,
-            tools=available_tools,
-            messages=messages,
-        ) as stream:
-            printed_text = False
-            for text in stream.text_stream:
-                print(text, end="", flush=True)
-                printed_text = True
-            response: Message = stream.get_final_message()
+        printed_text = False
+
+        try:
+            with client.messages.stream(
+                model="deepseek-v4-flash",
+                max_tokens=1024,
+                system=system,
+                tools=available_tools,
+                messages=messages,
+            ) as stream:
+                for text in stream.text_stream:
+                    print(text, end="", flush=True)
+                    printed_text = True
+
+                response: Message = stream.get_final_message()
+        except KeyboardInterrupt as error:
+            if printed_text:
+                print()
+
+            print("[中断] 当前生成已停止，半截回复没有写入对话历史。")
+            raise GenerationInterrupted from error
 
         if printed_text:
             print()
 
-        current_tokens = response_token_count(response)
-        total_tokens += current_tokens
+        state.current_tokens = response_token_count(response)
+        state.total_tokens += state.current_tokens
         
         print("stop_reason:", response.stop_reason)
         
@@ -467,40 +491,56 @@ def run_agent_loop(
             raise RuntimeError(f"模型以未知原因结束：{response.stop_reason}")
 
         tool_results: list[ToolResultBlockParam] = []
+        interrupted_during_tool = False
 
         for block in response.content:
             if block.type == "tool_use":
                 print(f"[call] 模型要调用 {block.name}，参数 {block.input}")
 
-                if block.name not in allowed_tool_names:
-                    if block.name not in TOOL_FUNCTIONS:
-                        output = (
-                            "这次工具调用已被安全策略拒绝。"
-                            "请不要重复尝试同一种危险操作，请改用更安全的做法。"
-                        )
+                try:
+                    if interrupted_during_tool:
+                        output = "前一个工具调用已被中断，本工具没有执行。"
+                        is_error = True
+                    elif block.name not in allowed_tool_names:
+                        if block.name not in TOOL_FUNCTIONS:
+                            output = (
+                                "这次工具调用已被安全策略拒绝。"
+                                "请不要重复尝试同一种危险操作，请改用更安全的做法。"
+                            )
+                        else:
+                            output = f"当前 Agent 无权使用工具 '{block.name}'。"
+                        is_error = True
                     else:
-                        output = f"当前 Agent 无权使用工具 '{block.name}'。"
-                    is_error = True
-                else:
-                    decision = check_permission(block.name, block.input)
-                    is_error = False
+                        decision = check_permission(block.name, block.input)
+                        is_error = False
 
-                    if decision == "deny":
-                        output = (
-                            "这次工具调用已被安全策略拒绝。"
-                            "请不要重复尝试同一种危险操作，请改用更安全的做法。"
-                        )
-                        is_error = True
-                    elif decision == "confirm" and not ask_user(
-                        block.name, block.input
-                    ):
-                        output = (
-                            "用户拒绝了这次工具调用。"
-                            "请不要重复尝试同一种操作，请改用更安全的做法。"
-                        )
-                        is_error = True
-                    else:
-                        output, is_error = run_tool(block.name, block.input)
+                        if decision == "deny":
+                            output = (
+                                "这次工具调用已被安全策略拒绝。"
+                                "请不要重复尝试同一种危险操作，请改用更安全的做法。"
+                            )
+                            is_error = True
+                        elif decision == "confirm" and not ask_user(
+                            block.name, block.input
+                        ):
+                            output = (
+                                "用户拒绝了这次工具调用。"
+                                "请不要重复尝试同一种操作，请改用更安全的做法。"
+                            )
+                            is_error = True
+                        else:
+                            output, is_error = run_tool(block.name, block.input)
+                except GenerationInterrupted:
+                    output = "用户中断了子 Agent 的生成。"
+                    is_error = True
+                    interrupted_during_tool = True
+                except KeyboardInterrupt:
+                    output = (
+                        "用户中断了工具执行。工具可能已经产生了部分外部效果，"
+                        "继续前应先检查当前状态。"
+                    )
+                    is_error = True
+                    interrupted_during_tool = True
 
                 print("[recv] 工具返回：", output)
 
@@ -516,10 +556,13 @@ def run_agent_loop(
         # 工具结果必须回传对应的 tool_use_id，模型才能知道结果属于哪个请求。
         messages.append({"role": "user", "content": tool_results})
 
-        print("当前轮 token 用量:", current_tokens)
-        print("本次会话累计 token 用量:", total_tokens)
+        print("当前轮 token 用量:", state.current_tokens)
+        print("本次会话累计 token 用量:", state.total_tokens)
+
+        if interrupted_during_tool:
+            raise GenerationInterrupted
         
-        if max_rounds is not None and round_number >= max_rounds:
+        if max_rounds is not None and state.round_number >= max_rounds:
             print("达到最大执行轮数，任务尚未完成。")
             print_messages("当前对话历史", messages)
             return None
@@ -554,16 +597,61 @@ def spawn_agent(task: str) -> str:
 
 TOOL_FUNCTIONS["spawn_agent"] = spawn_agent
 
-messages: list[MessageParam] = [
-    {
-        "role": "user",
-        "content": input("请输入你的问题或任务描述："),
-    }
-]
 
-run_agent_loop(
-    messages=messages,
-    available_tools=tools,
-    allowed_tool_names=set(TOOL_FUNCTIONS),
-    max_rounds=MAX_AGENT_ROUNDS,
-)
+def main() -> None:
+    messages: list[MessageParam] = []
+    state = AgentState()
+
+    while True:
+        try:
+            user_input = input(
+                "\n请输入问题或任务描述（直接回车退出）："
+            ).strip()
+        except KeyboardInterrupt:
+            print("\n程序已退出。")
+            break
+
+        if not user_input:
+            print("程序已退出。")
+            break
+
+        messages.append({"role": "user", "content": user_input})
+
+        while True:
+            try:
+                run_agent_loop(
+                    messages=messages,
+                    available_tools=tools,
+                    allowed_tool_names=set(TOOL_FUNCTIONS),
+                    max_rounds=MAX_AGENT_ROUNDS,
+                    state=state,
+                )
+                break
+            except GenerationInterrupted:
+                try:
+                    follow_up = input(
+                        "补充要求（直接回车则让模型重新评估）："
+                    ).strip()
+                except KeyboardInterrupt:
+                    print("\n程序已退出。")
+                    return
+
+                if follow_up:
+                    retry_instruction = follow_up
+                else:
+                    retry_instruction = (
+                        "上一次生成在完成前被中断，未完成内容没有保存在历史中。"
+                        "请从头重新评估当前任务，先考虑可行方案，"
+                        "再选择合适的方法继续。"
+                    )
+
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": retry_instruction,
+                    }
+                )
+
+
+if __name__ == "__main__":
+    main()
