@@ -27,21 +27,38 @@ from tool_registry import (
 )
 
 MAX_AGENT_ROUNDS: int | None = None
+"""主 Agent 的模型调用轮数上限；None 表示不限制。当前轮数会跨用户任务累计。"""
+
 CHILD_MAX_ROUNDS = 10
+"""子 Agent 的模型调用轮数上限，当前设为 10 轮。"""
+
 COMPRESSION_TRIGGER_TOKENS = 30_000
+"""下轮输入 token 数加预留输出达到此值时，尝试压缩较早的对话。"""
+
+MODEL_MAX_OUTPUT_TOKENS = 1024
+"""正式模型请求的最大输出 token 数；压缩判断也按此值预留输出空间。"""
+
 KEEP_RECENT_MESSAGES = 4
+"""压缩时至少保留最近 4 条原始消息；为避免拆开工具调用与结果，可能多保留一条。"""
+
 SUMMARY_MODEL = "deepseek-v4-flash"
+MODEL = "deepseek-v4-flash"
 
 
 @dataclass
 class AgentState:
     round_number: int = 0
-    current_tokens: int = 0
+    last_response_tokens: int = 0
     total_tokens: int = 0
 
 
 class GenerationInterrupted(Exception):
     """表示用户中断了当前 Agent 的执行。"""
+
+
+class TokenCountError(Exception):
+    """请求前的接口 token 计数失败。"""
+
 
 COMPRESSION_PROMPT = """
 你正在压缩一段 Agent 的较早对话历史。
@@ -154,6 +171,30 @@ def response_token_count(response: Message) -> int:
     return response.usage.input_tokens + response.usage.output_tokens
 
 
+def count_request_tokens(
+    system: str,
+    messages: list[MessageParam],
+    available_tools: list[ToolParam],
+) -> int:
+    """使用接口计算下一次完整请求的输入 token 数。"""
+    try:
+        result = client.messages.count_tokens(
+            model=MODEL,
+            system=system,
+            tools=available_tools,
+            messages=messages,
+        )
+    except anthropic.APIStatusError as error:
+        raise TokenCountError(f"token 计数接口失败（HTTP {error.status_code}）。") from error
+    except anthropic.APIError as error:
+        raise TokenCountError(f"token 计数接口失败（{type(error).__name__}）。") from error
+
+    counted = getattr(result, "input_tokens", None)
+    if type(counted) is not int or counted < 0:
+        raise TokenCountError("token 计数接口返回格式异常：缺少有效的 input_tokens。")
+    return counted
+
+
 def contains_tool_result(message: MessageParam) -> bool:
     """判断一条消息中是否包含工具执行结果。"""
     content = message["content"]
@@ -169,10 +210,10 @@ def contains_tool_result(message: MessageParam) -> bool:
 
 def compress_messages(
     history: list[MessageParam],
-    current_tokens: int,
+    next_request_tokens: int,
 ) -> tuple[list[MessageParam], int]:
     """超过触发线时，将较旧历史压缩成一条摘要消息。"""
-    if current_tokens < COMPRESSION_TRIGGER_TOKENS:
+    if next_request_tokens < COMPRESSION_TRIGGER_TOKENS:
         return history, 0
 
     if len(history) <= KEEP_RECENT_MESSAGES:
@@ -261,14 +302,32 @@ def run_agent_loop(
     while True:
         state.round_number += 1
 
-        compressed_messages, compression_tokens = compress_messages(
-            messages,
-            state.current_tokens,
-        )
-        messages[:] = compressed_messages
-        state.total_tokens += compression_tokens
+        try:
+            system, messages = build_context(messages)
+            input_tokens = count_request_tokens(
+                system, messages, available_tools
+            )
+            next_request_tokens = input_tokens + MODEL_MAX_OUTPUT_TOKENS
+            print(
+                f"[tokens] 下轮输入 {input_tokens}（接口计数），"
+                f"预留输出 {MODEL_MAX_OUTPUT_TOKENS}。"
+            )
 
-        system, messages = build_context(messages)
+            compressed_messages, compression_tokens = compress_messages(
+                messages,
+                next_request_tokens,
+            )
+            messages[:] = compressed_messages
+            state.total_tokens += compression_tokens
+
+            if compression_tokens:
+                input_tokens = count_request_tokens(
+                    system, messages, available_tools
+                )
+                print(f"[tokens] 压缩后输入 {input_tokens}（接口计数）。")
+        except KeyboardInterrupt as error:
+            print("\n[中断] 计数或压缩已停止，当前生成尚未开始。")
+            raise GenerationInterrupted from error
 
         print(f"\n========== 第 {state.round_number} 轮模型响应 ==========")
 
@@ -276,8 +335,8 @@ def run_agent_loop(
 
         try:
             with client.messages.stream(
-                model="deepseek-v4-flash",
-                max_tokens=1024,
+                model=MODEL,
+                max_tokens=MODEL_MAX_OUTPUT_TOKENS,
                 system=system,
                 tools=available_tools,
                 messages=messages,
@@ -297,8 +356,8 @@ def run_agent_loop(
         if printed_text:
             print()
 
-        state.current_tokens = response_token_count(response)
-        state.total_tokens += state.current_tokens
+        state.last_response_tokens = response_token_count(response)
+        state.total_tokens += state.last_response_tokens
         
         print("stop_reason:", response.stop_reason)
         
@@ -372,7 +431,7 @@ def run_agent_loop(
         # 工具结果必须回传对应的 tool_use_id，模型才能知道结果属于哪个请求。
         messages.append({"role": "user", "content": tool_results})
 
-        print("当前轮 token 用量:", state.current_tokens)
+        print("刚结束的模型调用 token 用量:", state.last_response_tokens)
         print("本次会话累计 token 用量:", state.total_tokens)
 
         if interrupted_during_tool:
@@ -470,6 +529,9 @@ def main() -> None:
                         "content": retry_instruction,
                     }
                 )
+            except TokenCountError as error:
+                print(f"[tokens] {error} 本轮正式生成尚未开始，请检查后输入‘重试’。")
+                break
 
 
 if __name__ == "__main__":
