@@ -464,6 +464,49 @@ def run_agent_loop(
         print("stop_reason:", response.stop_reason)
         
 
+        if response.stop_reason == "max_tokens":
+            tool_use_blocks = [
+                block
+                for block in response.content
+                if block.type == "tool_use"
+            ]
+
+            if tool_use_blocks:
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": response.content,
+                    }
+                )
+
+                interrupted_results: list[ToolResultBlockParam] = []
+
+                for block in tool_use_blocks:
+                    interrupted_results.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": (
+                                "模型本轮输出达到了 max_tokens，"
+                                "工具参数可能不完整，因此本次工具没有执行。"
+                                "请重新生成完整的工具调用。"
+                            ),
+                            "is_error": True,
+                        }
+                    )
+
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": interrupted_results,
+                    }
+                )
+
+            print_messages("\n当前对话历史", messages)
+            print("[警告] 单轮回应达到最大tokens，模型输出被截断，可能未完成回答。")
+            return None
+
+
         # 每一轮都把模型的完整输出保存到对话历史中。
         messages.append(
             {
@@ -480,11 +523,6 @@ def run_agent_loop(
             ).strip()
             #print_messages("当前对话历史", messages)
             return final_text
-
-        elif response.stop_reason == "max_tokens":
-            print_messages("\n当前对话历史", messages)
-            print("[警告] 单轮回应达到最大tokens，模型输出被截断，可能未完成回答。")
-            return None
 
         if response.stop_reason != "tool_use":
             print_messages("\n最终对话历史", messages)
