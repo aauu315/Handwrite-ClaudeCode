@@ -35,7 +35,7 @@ CHILD_MAX_ROUNDS = 10
 COMPRESSION_TRIGGER_TOKENS = 30_000
 """下轮输入 token 数加预留输出达到此值时，尝试压缩较早的对话。"""
 
-MODEL_MAX_OUTPUT_TOKENS = 1024
+MODEL_MAX_OUTPUT_TOKENS = 4096
 """正式模型请求的最大输出 token 数；压缩判断也按此值预留输出空间。"""
 
 KEEP_RECENT_MESSAGES = 4
@@ -146,7 +146,10 @@ def execute_tool_uses(
             is_error = True
             interrupted_during_tool = True
 
-        print("[recv] 工具返回：", output)
+        if block.name == "read_file" and not is_error:
+            print("[recv] read_file 已完成；文件正文已交给模型，终端不展示。")
+        else:
+            print("[recv] 工具返回：", output)
 
         tool_result: ToolResultBlockParam = {
             "type": "tool_result",
@@ -233,7 +236,7 @@ def compress_messages(
 
     summary_response: Message = client.messages.create(
         model=SUMMARY_MODEL,
-        max_tokens=1024,
+        max_tokens=MODEL_MAX_OUTPUT_TOKENS,
         system=COMPRESSION_PROMPT,
         messages=old_messages,
     )

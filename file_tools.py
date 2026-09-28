@@ -23,22 +23,43 @@ def list_files(pattern:str = "*") -> str:
 
 MAX_READ_LINES = 400    # 一次最多读这么多行
 
-def read_file(path: str) -> str:
-    full = _safe_path(path)            
+def read_file(path: str, start_line: int = 1) -> str:
+    """从指定行开始读取最多 400 行，并返回总行数和续读位置。"""
+    if type(start_line) is not int or start_line < 1:
+        raise ToolError("start_line 必须是从 1 开始的整数。")
+
+    full = _safe_path(path)
+    end_line = start_line + MAX_READ_LINES - 1
+    shown: list[str] = []
+    total_lines = 0
+
     try:
         with open(full, encoding="utf-8") as f:
-            lines = f.readlines()
-            _read_files.add(full)  # 记录已读取的文件
+            for line_number, line in enumerate(f, start=1):
+                total_lines = line_number
+                if start_line <= line_number <= end_line:
+                    shown.append(f"{line_number:>4}\t{line}")
+        _read_files.add(full)  # 记录已读取的文件
     except FileNotFoundError:
         raise ToolError(f"找不到文件 '{path}'。") from None
 
-    truncated = len(lines) > MAX_READ_LINES
-    shown = lines[:MAX_READ_LINES]
-    body = "".join(f"{i+1:>4}\t{ln}"
-                   for i, ln in enumerate(shown))
-    if truncated:
-        body += f"\n... ( truncated after {MAX_READ_LINES} lines )"
-    return body
+    if total_lines == 0:
+        return "文件为空，共 0 行。"
+    if start_line > total_lines:
+        return f"文件共 {total_lines} 行；从第 {start_line} 行起没有更多内容。"
+
+    last_line = min(end_line, total_lines)
+    result = (
+        f"文件共 {total_lines} 行；本次读取第 {start_line}-{last_line} 行：\n"
+        + "".join(shown)
+    )
+    if last_line < total_lines:
+        result += (
+            f"\n... ( truncated after {MAX_READ_LINES} lines )"
+            f"\n还有未读取内容；继续调用 "
+            f"read_file(path={path!r}, start_line={last_line + 1})。"
+        )
+    return result
 
 def write_file(path: str, content: str) -> str:
     full = _safe_path(path)

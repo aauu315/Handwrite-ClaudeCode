@@ -187,9 +187,11 @@ register_tool(
         function=file_tools.read_file,
         permission="read_only",
         description=(
-            "功能：读取指定 UTF-8 文本文件，并返回文件的完整内容。"
-            "想改一个文件之前必须先读一遍，否则会被edit_file拒绝。"
-            "适用：当用户明确要求查看某个文本文件，或回答问题必须读取指定文件时使用。"
+            "功能：分段读取指定 UTF-8 文本文件，每次最多返回 400 行，"
+            "并告知文件总行数及下一段的 start_line。"
+            "若还需要后续内容，请用同一路径和提示的 start_line 再次调用。"
+            "想改一个文件之前必须先读一遍，否则会被 edit_file 拒绝。"
+            "适用：查看指定文本文件。"
             "不适用：不要用于读取目录、二进制文件、用户未授权或与当前任务无关的敏感文件。"
         ),
         input_schema={
@@ -201,7 +203,11 @@ register_tool(
                         "要读取的文本文件路径，可以是相对路径或绝对路径，"
                         "例如：README.md。"
                     ),
-                }
+                },
+                "start_line": {
+                    "type": "integer",
+                    "description": "从第几行开始读取；首次调用省略或填 1。",
+                },
             },
             "required": ["path"],
         },
