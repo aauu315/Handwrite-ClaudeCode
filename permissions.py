@@ -65,6 +65,10 @@ def validate_tool_input(
 
 def check_permission(tool: ToolSpec, tool_input: dict) -> str:
     """第二步：按注册的权限类型决定自动允许、询问用户或拒绝。"""
+    if tool.name in {"write_file", "edit_file"}:
+        # 文件函数先检查目标路径，再逐次询问；避免分发层提前或重复询问。
+        return "allow"
+
     if tool.permission == "read_only":
         return "allow"
 

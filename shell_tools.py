@@ -1,10 +1,9 @@
-import os
 import subprocess
 
+from path_access import WORKSPACE
 from tool_errors import ToolError
 
 
-WORKSPACE = os.path.abspath(".")
 DEFAULT_TIMEOUT_SECONDS = 30
 
 
@@ -13,7 +12,7 @@ def run_shell(command: str) -> str:
         result = subprocess.run(
             command,
             shell=True,
-            cwd=WORKSPACE,
+            cwd=str(WORKSPACE),
             capture_output=True,
             text=True,
             errors="replace",

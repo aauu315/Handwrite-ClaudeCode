@@ -1,0 +1,2 @@
+- [2026-09-22] 项目当前名为 coding_agent_demo，未来计划开发 bangumi_agent。
+- [2026-10-04] 项目约定：tests/ 下的测试是 AI 生成的消耗品（见 tests/README.md，作者未review、随时会变），排查问题时以源码 + README.md 为准，不要以 pytest 结果判断对错，也不要为跑测试去调整 Python 环境。另：2026-10 起路径边界与授权逻辑已从 file_tools 抽到 path_access.py。

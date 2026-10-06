@@ -164,17 +164,29 @@ register_tool(
         function=file_tools.list_files,
         permission="read_only",
         description=(
-            "功能：按glob模式列出工作区里的文件名，例如'*.py'、[**/*.md'。只返回文件名，不读内容。"
+            "功能：按 glob 模式列出指定目录内的文件和目录名称，"
+            "例如 '*.py'、'**/*.md'。只返回名称，不读文件内容。"
             "适用：想知道有哪些文件、文件在哪时用它。"
-            "不适用：不要用于读取文件内容、执行文件或访问工作区外的路径。"
+            "工作区外目录会先征求读取权限。"
+            "不适用：不要用于读取文件内容或执行文件。"
         ),
         input_schema={
             "type": "object",
             "properties": {
                 "pattern": {
                     "type": "string",
-                    "description": "要匹配的文件名模式，可以使用通配符，例如：*.py、**/*.md。",
-                }
+                    "description": (
+                        "相对于 directory 的匹配模式，可使用通配符，"
+                        "例如 *.py、**/*.md；不能包含 .. 或绝对路径。"
+                    ),
+                },
+                "directory": {
+                    "type": "string",
+                    "description": (
+                        "要搜索的目录，默认是启动程序时的工作区。"
+                        "指定工作区外目录时会先征求读取权限。"
+                    ),
+                },
             },
             "required": ["pattern"],
         },
