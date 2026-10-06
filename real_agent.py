@@ -27,7 +27,7 @@ from tool_registry import (
 )
 
 MAX_AGENT_ROUNDS: int | None = None
-"""主 Agent 的模型调用轮数上限；None 表示不限制。当前轮数会跨用户任务累计。"""
+"""主 Agent 每个用户任务的模型调用轮数上限；None 表示不限制。"""
 
 CHILD_MAX_ROUNDS = 10
 """子 Agent 的模型调用轮数上限，当前设为 10 轮。"""
@@ -47,7 +47,8 @@ MODEL = "deepseek-v4-flash"
 
 @dataclass
 class AgentState:
-    round_number: int = 0
+    total_rounds: int = 0
+    task_rounds: int = 0
     last_response_tokens: int = 0
     total_tokens: int = 0
 
@@ -303,7 +304,10 @@ def run_agent_loop(
         state = AgentState()
 
     while True:
-        state.round_number += 1
+        if max_rounds is not None and state.task_rounds >= max_rounds:
+            print("达到当前任务的最大执行轮数，任务尚未完成。")
+            print_messages("当前对话历史", messages)
+            return None
 
         try:
             system, messages = build_context(messages)
@@ -332,7 +336,13 @@ def run_agent_loop(
             print("\n[中断] 计数或压缩已停止，当前生成尚未开始。")
             raise GenerationInterrupted from error
 
-        print(f"\n========== 第 {state.round_number} 轮模型响应 ==========")
+        # 计数和压缩完成后，才记录这次正式模型调用。
+        state.task_rounds += 1
+        state.total_rounds += 1
+        print(
+            f"\n========== 当前任务第 {state.task_rounds} 轮模型响应"
+            f"（本次运行第 {state.total_rounds} 轮）=========="
+        )
 
         printed_text = False
 
@@ -439,11 +449,6 @@ def run_agent_loop(
 
         if interrupted_during_tool:
             raise GenerationInterrupted
-        
-        if max_rounds is not None and state.round_number >= max_rounds:
-            print("达到最大执行轮数，任务尚未完成。")
-            print_messages("当前对话历史", messages)
-            return None
 
 
 def spawn_agent(task: str) -> str:
@@ -496,6 +501,8 @@ def main() -> None:
             print("程序已退出。")
             break
 
+        # 只在收到新任务时清零；中断后的补充要求仍属于当前任务。
+        state.task_rounds = 0
         messages.append({"role": "user", "content": user_input})
 
         while True:
