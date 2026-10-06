@@ -106,6 +106,7 @@ def execute_tool_uses(
 
     for block in tool_use_blocks:
         print(f"[call] 模型要调用 {block.name}，参数 {block.input}")
+        tool_executed = False
 
         try:
             if interrupted_during_tool:
@@ -134,6 +135,7 @@ def execute_tool_uses(
                 else:
                     if tool is None:
                         raise RuntimeError("权限检查允许了一个未注册的工具。")
+                    tool_executed = True
                     output, is_error = run_tool(tool, block.input)
         except GenerationInterrupted:
             output = "用户中断了子 Agent 的生成。"
@@ -147,8 +149,12 @@ def execute_tool_uses(
             is_error = True
             interrupted_during_tool = True
 
-        if block.name == "read_file" and not is_error:
-            print("[recv] read_file 已完成；文件正文已交给模型，终端不展示。")
+        if block.name in {"run_shell", "read_shell_output"} and tool_executed:
+            print(f"[recv] {block.name} 已完成。")
+            if block.name == "read_shell_output" and is_error:
+                print(f"[recv] 续读失败：{output}")
+        elif block.name == "read_file" and not is_error:
+            print("[recv] read_file 已完成。")
         else:
             print("[recv] 工具返回：", output)
 

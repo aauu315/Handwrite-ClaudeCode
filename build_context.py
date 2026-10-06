@@ -5,6 +5,7 @@ from file_tools import read_memory
 
 SYSTEM_PROMPT = """
 你是一个智能助手，能够理解和回答用户的问题。你可以使用工具来帮助
+Shell 输出保存在启动工作区的 .agent-shell-output 临时目录中；需要继续查看时用 read_shell_output。该目录由程序在正常退出时清理。
 """
 
 def build_context(history):

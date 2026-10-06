@@ -296,8 +296,11 @@ register_tool(
         function=shell_tools.run_shell,
         permission="shell",
         description=(
-            "功能：在当前项目目录中执行一条系统命令，"
-            "返回退出码、标准输出和标准错误。"
+            "功能：在启动程序时的工作区执行一条系统命令。"
+            "完整的标准输出和标准错误保存到工作区的 .agent-shell-output 临时目录，"
+            "工具结果返回状态、退出码、有限预览、output_id 和具体目录。"
+            "需要剩余内容时使用 read_shell_output 续读，不要重新执行命令。"
+            "临时文件在本次程序正常退出时删除。"
             "适用：运行测试、执行脚本、检查项目状态，以及验证代码修改是否正确。"
             "判断：退出码 0 通常表示成功；非 0 表示失败，"
             "失败时应先阅读标准错误，再决定下一步。"
@@ -311,6 +314,36 @@ register_tool(
                 }
             },
             "required": ["command"],
+        },
+    )
+)
+
+register_tool(
+    ToolSpec(
+        name="read_shell_output",
+        function=shell_tools.read_shell_output,
+        permission="shell",
+        description=(
+            "按段读取 run_shell 已保存的标准输出或标准错误，不重新执行命令。"
+            "传入上次结果的 output_id，stream 选 stdout 或 stderr；"
+            "首次 cursor 省略，之后使用返回的 next_cursor，直到它为无。"
+            "保存目录是工作区中的 .agent-shell-output，仅供本次程序运行使用。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "output_id": {"type": "string", "description": "run_shell 返回的 output_id。"},
+                "stream": {
+                    "type": "string",
+                    "enum": ["stdout", "stderr"],
+                    "description": "要续读的输出流。",
+                },
+                "cursor": {
+                    "type": "string",
+                    "description": "上次返回的 next_cursor；首次调用省略。",
+                },
+            },
+            "required": ["output_id", "stream"],
         },
     )
 )

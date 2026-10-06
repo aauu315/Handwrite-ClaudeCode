@@ -16,3 +16,6 @@ wheels/
 
 # ai测试，暂不上传
 tests/
+
+# Shell 输出只在本次程序运行期间保留
+.agent-shell-output/
