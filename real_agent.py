@@ -334,7 +334,7 @@ def run_agent_loop(
             return None
 
         try:
-            system, messages = build_context(messages)
+            system, messages = build_context(messages, MODEL)
             input_tokens = count_request_tokens(
                 system, messages, available_tools
             )

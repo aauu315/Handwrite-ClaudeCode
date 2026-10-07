@@ -23,6 +23,15 @@ OUTPUT_DIRECTORY_NAME = ".agent-shell-output"
 _ENCODING = locale.getpreferredencoding(False)
 
 
+def get_shell_description() -> str:
+    """描述 run_shell 使用 shell=True 时的默认命令解释器。"""
+    if os.name == "nt":
+        return os.environ.get("ComSpec") or "cmd.exe（Windows 默认）"
+    if os.name == "posix":
+        return "/bin/sh"
+    return f"未知（os.name={os.name}）"
+
+
 @dataclass(frozen=True)
 class ShellOutput:
     directory: Path
