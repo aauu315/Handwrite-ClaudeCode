@@ -1,7 +1,10 @@
 import os
 import traceback
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
+from pprint import pformat
+from uuid import uuid4
 import anthropic
 from dotenv import load_dotenv
 from anthropic.types import (
@@ -12,9 +15,8 @@ from anthropic.types import (
     ToolUseBlock,
 )
 
-from pprint import pprint
-
 from build_context import build_context
+from path_access import WORKSPACE
 from permissions import ask_user, check_tool_call
 from tool_errors import ToolError
 from tool_registry import (
@@ -170,10 +172,26 @@ def execute_tool_uses(
     return tool_results, interrupted_during_tool
 
 
-def print_messages(label: str, history: list[MessageParam]) -> None:
-    """用容易阅读的格式完整打印当前对话历史。"""
-    print(f"\n--- {label} ---")
-    pprint(history, sort_dicts=False, width=100)
+def save_messages(label: str, history: list[MessageParam]) -> None:
+    """把传入的完整消息历史留在工作区，供故障后查看。"""
+    try:
+        base = WORKSPACE / ".agent-diagnostics"
+        base.mkdir(exist_ok=True)
+        if base.resolve() != base:
+            raise OSError("诊断目录指向了工作区中的其他位置或工作区外")
+
+        directory = base / (
+            f"messages-{datetime.now():%Y%m%d-%H%M%S}-{uuid4().hex[:8]}"
+        )
+        directory.mkdir()
+        path = directory / "messages.txt"
+        temporary_path = directory / "messages.tmp"
+        body = f"--- {label} ---\n{pformat(history, sort_dicts=False, width=100)}\n"
+        temporary_path.write_text(body, encoding="utf-8")
+        temporary_path.replace(path)
+        print(f"[诊断] 完整对话历史已保存：{path}")
+    except OSError as error:
+        print(f"[诊断] 无法保存对话历史：{error}")
 
 
 def response_token_count(response: Message) -> int:
@@ -312,7 +330,7 @@ def run_agent_loop(
     while True:
         if max_rounds is not None and state.task_rounds >= max_rounds:
             print("达到当前任务的最大执行轮数，任务尚未完成。")
-            print_messages("当前对话历史", messages)
+            save_messages("当前对话历史", messages)
             return None
 
         try:
@@ -411,7 +429,7 @@ def run_agent_loop(
                 if interrupted_during_tool:
                     raise GenerationInterrupted
 
-            print_messages("\n当前对话历史", messages)
+            save_messages("当前对话历史", messages)
             print("[警告] 单轮回应达到最大tokens，模型输出被截断，可能未完成回答。")
             return None
 
@@ -430,11 +448,10 @@ def run_agent_loop(
                 for block in response.content
                 if block.type == "text"
             ).strip()
-            #print_messages("当前对话历史", messages)
             return final_text
 
         if response.stop_reason != "tool_use":
-            print_messages("\n最终对话历史", messages)
+            save_messages("最终对话历史", messages)
             raise RuntimeError(f"模型以未知原因结束：{response.stop_reason}")
 
         tool_use_blocks = [

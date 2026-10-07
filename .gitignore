@@ -19,3 +19,6 @@ tests/
 
 # Shell 输出只在本次程序运行期间保留
 .agent-shell-output/
+
+# 诊断历史由用户自行保留或删除
+.agent-diagnostics/
